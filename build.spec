@@ -5,15 +5,13 @@ from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
-# 1. Recolección de temas y configuraciones de CustomTkinter
+# Recolección de configuraciones de CustomTkinter
 ctk_datas = collect_data_files('customtkinter')
 
-# 2. Manejo seguro de la carpeta de assets
 added_datas = list(ctk_datas)
 if os.path.exists('assets') and os.path.isdir('assets'):
     added_datas.append(('assets', 'assets'))
 
-# 3. Verificación del icono
 icon_path = 'assets/icon.ico' if os.path.exists('assets/icon.ico') else None
 
 a = Analysis(
