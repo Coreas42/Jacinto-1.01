@@ -16,28 +16,15 @@ CREATE TABLE IF NOT EXISTS productos (
     sku TEXT UNIQUE NOT NULL,
     nombre TEXT NOT NULL,
     categoria TEXT NOT NULL,
+    marca_vehiculo TEXT DEFAULT 'Universal',
+    anio_vehiculo TEXT DEFAULT 'Todos',
     tipo TEXT CHECK(tipo IN ('FISICO', 'SERVICIO')) NOT NULL DEFAULT 'FISICO',
     costo REAL NOT NULL DEFAULT 0.0,
     precio REAL NOT NULL DEFAULT 0.0,
     stock_actual INTEGER NOT NULL DEFAULT 0,
-    stock_minimo INTEGER NOT NULL DEFAULT 5,
+    stock_minimo INTEGER NOT NULL DEFAULT 3,
+    imagen_path TEXT DEFAULT '',
     activo INTEGER DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS proveedores (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    razon_social TEXT NOT NULL,
-    contacto TEXT,
-    telefono TEXT,
-    direccion TEXT
-);
-
-CREATE TABLE IF NOT EXISTS compras_cabecera (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    proveedor_id INTEGER REFERENCES proveedores(id),
-    costo_flete REAL DEFAULT 0.0,
-    fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
-    total_compra REAL DEFAULT 0.0
 );
 
 CREATE TABLE IF NOT EXISTS turnos_caja (
@@ -90,10 +77,20 @@ CREATE TABLE IF NOT EXISTS gastos (
 );
 
 CREATE INDEX IF NOT EXISTS idx_prod_sku ON productos(sku);
+CREATE INDEX IF NOT EXISTS idx_prod_vehiculo ON productos(marca_vehiculo, anio_vehiculo);
 CREATE INDEX IF NOT EXISTS idx_ventas_fecha ON ventas(fecha);
-CREATE INDEX IF NOT EXISTS idx_ventas_cliente ON ventas(cliente_id);
 """
 
 DEFAULT_DATA_SQL = """
 INSERT OR IGNORE INTO clientes (id, nombre, telefono) VALUES (1, 'Cliente General', '0000-0000');
+
+INSERT OR IGNORE INTO productos (id, sku, nombre, categoria, marca_vehiculo, anio_vehiculo, tipo, costo, precio, stock_actual, stock_minimo, imagen_path) 
+VALUES 
+(1, 'ALF-5D-HILUX', 'Alfombras 5D Bandeja', 'Alfombras', 'Toyota Hilux', '2016-2024', 'FISICO', 45.00, 75.00, 12, 3, ''),
+(2, 'LON-DMAX-01', 'Lona Maritima Enrollable', 'Lonas', 'Isuzu D-Max', '2018-2024', 'FISICO', 110.00, 185.00, 5, 2, ''),
+(3, 'EST-NAVARA', 'Estribos Laterales Negros', 'Estribos', 'Nissan NP300', '2016-2023', 'FISICO', 130.00, 220.00, 4, 2, ''),
+(4, 'POL-NANO-CER', 'Polarizado Nano Cerámico Completo', 'Servicios', 'Universal', 'Todos', 'SERVICIO', 35.00, 95.00, 0, 0, ''),
+(5, 'INST-ACCESORIO', 'Instalación y Cableado General', 'Servicios', 'Universal', 'Todos', 'SERVICIO', 15.00, 35.00, 0, 0, '');
+
+INSERT OR IGNORE INTO turnos_caja (id, fondo_inicial, estado) VALUES (1, 100.00, 'ABIERTO');
 """
