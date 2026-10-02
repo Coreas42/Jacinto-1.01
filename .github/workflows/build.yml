@@ -1,7 +1,7 @@
 name: Compilar Ejecutable Windows (Manual)
 
 on:
-  workflow_dispatch: # Permite ejecutar el proceso manualmente con un botón
+  workflow_dispatch:
 
 permissions:
   contents: write
