@@ -1,6 +1,9 @@
 import customtkinter as ctk
 from src.ui.views.dashboard_view import DashboardView
 from src.ui.views.pos_view import POSView
+from src.ui.views.inventory_view import InventoryView
+from src.ui.views.cash_register_view import CashRegisterView
+from src.ui.views.reports_view import ReportsView
 from src.models.backup_manager import BackupManager
 
 class MainWindow(ctk.CTk):
@@ -9,8 +12,8 @@ class MainWindow(ctk.CTk):
         self.title("THE GARAGE AUTO ACCESORIOS SV - POS & Inventario")
         self.geometry("1280x768")
         self.minsize(1024, 600)
-        
-        # Tema Visual
+
+        # Paleta oscura #1E1E2E
         ctk.set_appearance_mode("dark")
         self.configure(fg_color="#121218")
 
@@ -18,17 +21,26 @@ class MainWindow(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
 
         self._build_sidebar()
-        
-        # Contenedor de Vistas
+
+        # Contenedor central
         self.container = ctk.CTkFrame(self, fg_color="#1E1E2E", corner_radius=12)
-        self.container.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+        self.container.grid(row=0, column=1, sticky="nsew", padx=10, pady=(10, 26))
         self.container.grid_rowconfigure(0, weight=1)
         self.container.grid_columnconfigure(0, weight=1)
+
+        # Créditos fijos solicitados en la esquina inferior derecha
+        lbl_creditos = ctk.CTkLabel(
+            self, 
+            text="Creado por Francisco Coreas", 
+            font=ctk.CTkFont(size=11), 
+            text_color="#6B6B80"
+        )
+        lbl_creditos.place(relx=1.0, rely=1.0, anchor="se", x=-15, y=-6)
 
         self.views = {}
         self._load_views()
         self.show_view("dashboard")
-        
+
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_sidebar(self):
@@ -67,6 +79,10 @@ class MainWindow(ctk.CTk):
     def _load_views(self):
         self.views["dashboard"] = DashboardView(self.container)
         self.views["pos"] = POSView(self.container)
+        self.views["inventory"] = InventoryView(self.container)
+        self.views["cash"] = CashRegisterView(self.container)
+        self.views["reports"] = ReportsView(self.container)
+
         for view in self.views.values():
             view.grid(row=0, column=0, sticky="nsew")
 
@@ -81,5 +97,5 @@ class MainWindow(ctk.CTk):
         try:
             BackupManager.create_automatic_backup()
         except Exception as e:
-            print(f"Error generando backup automático: {e}")
+            print(f"Error generando backup: {e}")
         self.destroy()
