@@ -1,11 +1,7 @@
-name: Build and Release Windows Executable
+name: Compilar Ejecutable Windows (Manual)
 
 on:
-  push:
-    branches: [ "main" ]
-    tags:
-      - 'v*'
-  workflow_dispatch:
+  workflow_dispatch: # Permite ejecutar el proceso manualmente con un botón
 
 permissions:
   contents: write
@@ -15,39 +11,44 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout del Repositorio
+    - name: Descargar codigo del repositorio
       uses: actions/checkout@v4
 
-    - name: Configurar Python 3.11
+    - name: Configurar entorno Python
       uses: actions/setup-python@v5
       with:
         python-version: "3.11"
         cache: 'pip'
 
-    - name: Instalar Dependencias
+    - name: Instalar dependencias
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Compilar con PyInstaller
+    - name: Garantizar carpeta de recursos (Evita fallos en PyInstaller)
+      shell: pwsh
+      run: |
+        if (!(Test-Path -Path "assets")) {
+            New-Item -ItemType Directory -Path "assets"
+        }
+
+    - name: Compilar aplicacion con PyInstaller
       run: |
         pyinstaller build.spec
 
-    - name: Comprimir Artefacto (.zip)
+    - name: Empaquetar ejecutable en archivo ZIP
       shell: pwsh
       run: |
-        Compress-Archive -Path dist/TheGaragePOS.exe -DestinationPath dist/TheGaragePOS_Win64.zip
+        if (Test-Path -Path "dist/TheGaragePOS.exe") {
+            Compress-Archive -Path dist/TheGaragePOS.exe -DestinationPath dist/TheGaragePOS_Windows.zip -Force
+        } else {
+            Write-Error "No se encontro el archivo dist/TheGaragePOS.exe tras la compilacion."
+            exit 1
+        }
 
-    - name: Subir Binario como Artefacto del Build
+    - name: Guardar ejecutable como artefacto descargable
       uses: actions/upload-artifact@v4
       with:
-        name: TheGaragePOS-Binary
-        path: dist/TheGaragePOS.exe
-
-    - name: Publicar en GitHub Releases (Solo en Tags)
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: dist/TheGaragePOS_Win64.zip
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: TheGaragePOS-Instalador
+        path: dist/TheGaragePOS_Windows.zip
+        retention-days: 14
