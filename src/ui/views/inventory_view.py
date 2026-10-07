@@ -1,8 +1,11 @@
 import os
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+
 from src.database.connection import get_connection
 from src.utils.image_helper import save_product_image, load_ctk_image
+from src.core.validators import ProductValidator, ValidationError
+
 
 class InventoryView(ctk.CTkFrame):
     def __init__(self, parent):
@@ -18,18 +21,24 @@ class InventoryView(ctk.CTkFrame):
         self.refresh_data()
 
     def _build_ui(self):
-        # Panel Izquierdo: Formulario
         form = ctk.CTkScrollableFrame(self, fg_color="#181824", corner_radius=10)
         form.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
 
-        self.lbl_form_title = ctk.CTkLabel(form, text="Nuevo Producto / Servicio", font=ctk.CTkFont(size=16, weight="bold"), text_color="#8A2BE2")
+        self.lbl_form_title = ctk.CTkLabel(
+            form,
+            text="Nuevo Producto / Servicio",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color="#8A2BE2"
+        )
         self.lbl_form_title.pack(pady=10)
 
-        # Previsualización de Imagen
         self.img_preview = ctk.CTkLabel(form, text="", image=load_ctk_image("", (110, 110)))
         self.img_preview.pack(pady=4)
 
-        btn_select_img = ctk.CTkButton(form, text="Seleccionar Foto", fg_color="#3A3A54", hover_color="#7B1FA2", command=self._pick_image)
+        btn_select_img = ctk.CTkButton(
+            form, text="Seleccionar Foto", fg_color="#3A3A54", hover_color="#7B1FA2",
+            command=self._pick_image
+        )
         btn_select_img.pack(fill="x", padx=15, pady=4)
 
         self.ent_sku = ctk.CTkEntry(form, placeholder_text="SKU / Código Único")
@@ -47,7 +56,13 @@ class InventoryView(ctk.CTkFrame):
         self.ent_anio = ctk.CTkEntry(form, placeholder_text="Año Compatible (ej. 2016-2024, Todos)")
         self.ent_anio.pack(fill="x", padx=15, pady=4)
 
-        self.combo_tipo = ctk.CTkOptionMenu(form, values=["FISICO", "SERVICIO"], command=self._toggle_tipo, fg_color="#252538", button_color="#7B1FA2")
+        self.combo_tipo = ctk.CTkOptionMenu(
+            form,
+            values=["FISICO", "SERVICIO"],
+            command=self._toggle_tipo,
+            fg_color="#252538",
+            button_color="#7B1FA2"
+        )
         self.combo_tipo.pack(fill="x", padx=15, pady=4)
 
         self.ent_costo = ctk.CTkEntry(form, placeholder_text="Costo Unitario ($)")
@@ -67,15 +82,23 @@ class InventoryView(ctk.CTkFrame):
         self.ent_min = ctk.CTkEntry(form, placeholder_text="Stock Mínimo de Alerta")
         self.ent_min.pack(fill="x", padx=15, pady=4)
 
-        self.btn_action = ctk.CTkButton(form, text="GUARDAR ARTÍCULO", fg_color="#8A2BE2", hover_color="#7B1FA2", height=38, command=self._save_or_update)
+        self.btn_action = ctk.CTkButton(
+            form, text="GUARDAR ARTÍCULO", fg_color="#8A2BE2", hover_color="#7B1FA2",
+            height=38, command=self._save_or_update
+        )
         self.btn_action.pack(fill="x", padx=15, pady=(12, 4))
 
-        self.btn_cancel = ctk.CTkButton(form, text="Limpiar Formulario", fg_color="transparent", border_width=1, border_color="#555566", command=self._reset_form)
+        self.btn_cancel = ctk.CTkButton(
+            form, text="Limpiar Formulario", fg_color="transparent", border_width=1,
+            border_color="#555566", command=self._reset_form
+        )
         self.btn_cancel.pack(fill="x", padx=15, pady=4)
 
-        self.btn_delete = ctk.CTkButton(form, text="Eliminar Producto", fg_color="#C62828", hover_color="#8E0000", command=self._delete_product)
+        self.btn_delete = ctk.CTkButton(
+            form, text="Eliminar Producto", fg_color="#C62828", hover_color="#8E0000",
+            command=self._delete_product
+        )
 
-        # Panel Derecho: Búsqueda y Lista
         right_panel = ctk.CTkFrame(self, fg_color="#181824", corner_radius=10)
         right_panel.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
 
@@ -103,16 +126,22 @@ class InventoryView(ctk.CTkFrame):
 
     def _calc_margin(self, event=None):
         try:
-            c = float(self.ent_costo.get() or 0.0)
-            p = float(self.ent_precio.get() or 0.0)
-            gain = p - c
-            pct = (gain / p * 100) if p > 0 else 0
-            self.lbl_margin.configure(text=f"Margen: ${gain:.2f} ({pct:.1f}%)", text_color="#00E5FF" if gain >= 0 else "#FF5252")
+            costo = float(self.ent_costo.get() or 0.0)
+            precio = float(self.ent_precio.get() or 0.0)
+            gain = precio - costo
+            pct = (gain / precio * 100) if precio > 0 else 0
+            self.lbl_margin.configure(
+                text=f"Margen: ${gain:.2f} ({pct:.1f}%)",
+                text_color="#00E5FF" if gain >= 0 else "#FF5252"
+            )
         except ValueError:
             self.lbl_margin.configure(text="Margen: $0.00 (0%)")
 
     def _pick_image(self):
-        f = filedialog.askopenfilename(title="Seleccionar Foto", filetypes=[("Imágenes", "*.png;*.jpg;*.jpeg;*.webp")])
+        f = filedialog.askopenfilename(
+            title="Seleccionar Foto",
+            filetypes=[("Imágenes", "*.png;*.jpg;*.jpeg;*.webp")]
+        )
         if f:
             self.temp_image_file = f
             preview = load_ctk_image(f, (110, 110))
@@ -121,6 +150,7 @@ class InventoryView(ctk.CTkFrame):
     def _save_or_update(self):
         sku = self.ent_sku.get().strip()
         nombre = self.ent_nombre.get().strip()
+
         if not sku or not nombre:
             messagebox.showwarning("Atención", "El SKU y Nombre son obligatorios.")
             return
@@ -135,29 +165,59 @@ class InventoryView(ctk.CTkFrame):
             stock = int(self.ent_stock.get() or 0) if tipo == 'FISICO' else 0
             s_min = int(self.ent_min.get() or 3) if tipo == 'FISICO' else 0
 
+            validated = ProductValidator.validate_product_data(sku, nombre, tipo, costo, precio, stock, s_min)
+            if validated['precio'] <= 0:
+                raise ValidationError("Precio de venta debe ser mayor que cero.")
+            if validated['tipo'] == 'FISICO' and validated['stock_minimo'] > validated['stock_actual'] and validated['stock_actual'] >= 0:
+                pass
+
             with get_connection() as conn:
                 cursor = conn.cursor()
-                if self.selected_product_id:
-                    cursor.execute("SELECT imagen_path FROM productos WHERE id = ?", (self.selected_product_id,))
-                    row = cursor.fetchone()
-                    rel_img = row['imagen_path'] if row else ''
-                    
-                    if self.temp_image_file:
-                        rel_img = save_product_image(self.temp_image_file, sku)
+                existing = cursor.execute(
+                    "SELECT id FROM productos WHERE sku = ? AND id != ?",
+                    (validated['sku'], self.selected_product_id or -1)
+                ).fetchone()
+                if existing:
+                    raise ValidationError(f"El SKU '{validated['sku']}' ya existe en el catálogo.")
 
-                    cursor.execute("""
-                        UPDATE productos 
+                if self.selected_product_id:
+                    current = cursor.execute(
+                        "SELECT imagen_path FROM productos WHERE id = ?",
+                        (self.selected_product_id,)
+                    ).fetchone()
+                    rel_img = current['imagen_path'] if current else ''
+
+                    if self.temp_image_file:
+                        rel_img = save_product_image(self.temp_image_file, validated['sku'])
+
+                    cursor.execute(
+                        """
+                        UPDATE productos
                         SET sku = ?, nombre = ?, categoria = ?, marca_vehiculo = ?, anio_vehiculo = ?,
                             tipo = ?, costo = ?, precio = ?, stock_actual = ?, stock_minimo = ?, imagen_path = ?
                         WHERE id = ?
-                    """, (sku, nombre, categoria, marca, anio, tipo, costo, precio, stock, s_min, rel_img, self.selected_product_id))
+                        """,
+                        (
+                            validated['sku'], validated['nombre'], categoria, marca, anio,
+                            validated['tipo'], validated['costo'], validated['precio'],
+                            validated['stock_actual'], validated['stock_minimo'], rel_img,
+                            self.selected_product_id
+                        )
+                    )
                     msg = "Producto actualizado correctamente."
                 else:
-                    rel_img = save_product_image(self.temp_image_file, sku) if self.temp_image_file else ""
-                    cursor.execute("""
+                    rel_img = save_product_image(self.temp_image_file, validated['sku']) if self.temp_image_file else ""
+                    cursor.execute(
+                        """
                         INSERT INTO productos (sku, nombre, categoria, marca_vehiculo, anio_vehiculo, tipo, costo, precio, stock_actual, stock_minimo, imagen_path)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (sku, nombre, categoria, marca, anio, tipo, costo, precio, stock, s_min, rel_img))
+                        """,
+                        (
+                            validated['sku'], validated['nombre'], categoria, marca, anio,
+                            validated['tipo'], validated['costo'], validated['precio'],
+                            validated['stock_actual'], validated['stock_minimo'], rel_img
+                        )
+                    )
                     msg = "Producto registrado con éxito."
 
                 conn.commit()
@@ -165,6 +225,8 @@ class InventoryView(ctk.CTkFrame):
             messagebox.showinfo("Éxito", msg)
             self._reset_form()
             self.refresh_data()
+        except (ValidationError, ValueError) as e:
+            messagebox.showerror("Error de validación", str(e))
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo guardar: {e}")
 
@@ -246,7 +308,6 @@ class InventoryView(ctk.CTkFrame):
             lbl_pic.pack(side="left", padx=8, pady=4)
 
             stock_text = f"Stock: {p_dict['stock_actual']}" if p_dict['tipo'] == 'FISICO' else "[SERVICIO]"
-            color_stock = "#FF5252" if (p_dict['tipo'] == 'FISICO' and p_dict['stock_actual'] <= p_dict['stock_minimo']) else "#00E5FF"
 
             info = (
                 f"{p_dict['sku']} | {p_dict['nombre']}\n"
