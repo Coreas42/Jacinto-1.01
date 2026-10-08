@@ -1,210 +1,393 @@
 """
-Módulo de órdenes y pedidos.
-
-Gestiona pedidos, clientes, productos, instalación, anticipo, saldo pendiente y agenda.
+Servicio para clientes, pedidos y agenda.
+Centraliza la gestión operativa de clientes, seguimiento de pedidos y citas.
 """
 
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from src.database.connection import get_connection
-from src.core.validators import ProductValidator, SaleValidator, ValidationError
+from src.core.validators import (
+    CustomerValidator,
+    OrderValidator,
+    AgendaValidator,
+    ValidationError,
+)
+
+
+class CustomerService:
+    """Gestión de clientes del negocio."""
+
+    @staticmethod
+    def create_customer(nombre: str, telefono: str = "", correo: str = "",
+                       direccion: str = "", ciudad: str = "", notas: str = "") -> int:
+        data = CustomerValidator.validate_customer_data(nombre, telefono, correo, direccion, ciudad, notas)
+
+        with get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO clientes (nombre, telefono, correo, direccion, ciudad, notas)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data['nombre'],
+                    data['telefono'],
+                    data['correo'],
+                    data['direccion'],
+                    data['ciudad'],
+                    data['notas'],
+                ),
+            )
+            return cursor.lastrowid
+
+    @staticmethod
+    def get_customer(customer_id: int) -> Optional[Dict[str, Any]]:
+        if not customer_id:
+            return None
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM clientes WHERE id = ? AND activo = 1",
+                (customer_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    def list_customers(search: str = "", limit: int = 50) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM clientes WHERE activo = 1"
+        params: list[Any] = []
+
+        if search:
+            search = f"%{search.strip()}%"
+            query += " AND (nombre LIKE ? OR telefono LIKE ? OR correo LIKE ? OR ciudad LIKE ?)"
+            params.extend([search, search, search, search])
+
+        query += " ORDER BY nombre ASC LIMIT ?"
+        params.append(limit)
+
+        with get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(r) for r in rows]
+
+    @staticmethod
+    def update_customer(customer_id: int, **fields):
+        if not customer_id:
+            raise ValidationError("Debe indicar un cliente válido.")
+
+        current = CustomerService.get_customer(customer_id)
+        if not current:
+            raise ValidationError("Cliente no encontrado.")
+
+        updates = {}
+        for key, value in fields.items():
+            if value is None:
+                continue
+            if key == 'nombre':
+                updates['nombre'] = CustomerValidator.validate_name(value)
+            elif key == 'telefono':
+                updates['telefono'] = CustomerValidator.validate_phone(value)
+            elif key == 'correo':
+                updates['correo'] = CustomerValidator.validate_email(value)
+            elif key == 'direccion':
+                updates['direccion'] = (value or '').strip()[:200]
+            elif key == 'ciudad':
+                updates['ciudad'] = (value or '').strip()[:100]
+            elif key == 'notas':
+                updates['notas'] = (value or '').strip()[:500]
+
+        if not updates:
+            return current
+
+        set_clause = ", ".join(f"{key} = ?" for key in updates.keys())
+        values = list(updates.values()) + [customer_id]
+
+        with get_connection() as conn:
+            conn.execute(f"UPDATE clientes SET {set_clause} WHERE id = ?", values)
+            return CustomerService.get_customer(customer_id)
+
+    @staticmethod
+    def delete_customer(customer_id: int):
+        if not customer_id:
+            raise ValidationError("Debe indicar un cliente válido.")
+
+        with get_connection() as conn:
+            conn.execute("UPDATE clientes SET activo = 0 WHERE id = ?", (customer_id,))
+            return True
 
 
 class OrderService:
-    """Gestiona pedidos y agenda para ventas con instalación y envío."""
-
-    ESTADOS = ['PENDIENTE', 'CONFIRMADA', 'EN_INSTALACION', 'INSTALADA', 'ENVIADA', 'COMPLETADA', 'CANCELADA']
-    TIPOS_SERVICIO = ['INSTALACION_SITIO', 'ENVIO', 'SOLO_VENTA']
+    """Gestión de pedidos y pagos."""
 
     @staticmethod
-    def create_order(cliente_id: int, tipo_servicio: str, items: list, total_orden: float,
-                    anticipo: float = 0.0, costo_envio: float = 0.0,
-                    fecha_instalacion: str = None, notas: str = "", direccion: str = "") -> int:
-        """Crea una nueva orden con productos y datos de servicio."""
-        tipo_servicio = (tipo_servicio or '').upper()
-        if tipo_servicio not in OrderService.TIPOS_SERVICIO:
-            raise ValidationError(f"Tipo de servicio no válido: {tipo_servicio}")
+    def _build_order_number() -> str:
+        now = datetime.now()
+        return f"PED-{now.strftime('%Y%m%d')}-{now.strftime('%H%M%S')}"
 
-        total_orden = ProductValidator.validate_price(total_orden, "Total de la orden")
-        anticipo = ProductValidator.validate_price(anticipo, "Anticipo")
-        costo_envio = ProductValidator.validate_price(costo_envio, "Costo de envío")
+    @staticmethod
+    def create_order(cliente_id: int, items: list, tipo_entrega: str = "ENVIO",
+                     fecha_entrega=None, descuento: float = 0.0, envio: float = 0.0,
+                     metodo_pago: str = "EFECTIVO", notas: str = "") -> int:
+        data = OrderValidator.validate_order_data(
+            cliente_id=cliente_id,
+            items=items,
+            tipo_entrega=tipo_entrega,
+            descuento=descuento,
+            envio=envio,
+            anticipo=0.0,
+            notas=notas,
+        )
 
-        if not items:
-            raise ValidationError("La orden debe incluir al menos un producto o servicio.")
-
-        total_con_envio = total_orden + costo_envio
-        saldo_pendiente = total_con_envio - anticipo
-        if saldo_pendiente < 0:
-            raise ValidationError("El anticipo no puede exceder el total de la orden.")
+        numero_pedido = OrderService._build_order_number()
 
         with get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute(
-                    """INSERT INTO ordenes (
-                        cliente_id, tipo_servicio, total_orden, costo_envio, total_con_envio,
-                        anticipo, saldo_pendiente, fecha_instalacion, notas, direccion, estado
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDIENTE')""",
-                    (cliente_id, tipo_servicio, total_orden, costo_envio, total_con_envio,
-                     anticipo, saldo_pendiente, fecha_instalacion, notas or '', direccion or '')
+            cursor = conn.execute(
+                """
+                INSERT INTO pedidos (
+                    cliente_id, numero_pedido, fecha_entrega, tipo_entrega,
+                    subtotal, descuento, envio, total, anticipo, saldo_pendiente,
+                    estado, metodo_pago, notas
                 )
-                orden_id = cursor.lastrowid
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data['cliente_id'],
+                    numero_pedido,
+                    fecha_entrega,
+                    data['tipo_entrega'],
+                    data['subtotal'],
+                    data['descuento'],
+                    data['envio'],
+                    data['total'],
+                    data['anticipo'],
+                    data['saldo_pendiente'],
+                    'PENDIENTE',
+                    metodo_pago.upper(),
+                    data['notas'],
+                ),
+            )
+            pedido_id = cursor.lastrowid
 
-                for item in items:
-                    if not isinstance(item, dict):
-                        raise ValidationError("Cada item de la orden debe ser un diccionario.")
-
-                    producto_id = item.get('producto_id')
-                    cantidad = SaleValidator.validate_quantity(item.get('cantidad', 0))
-                    precio_unitario = ProductValidator.validate_price(item.get('precio_unitario', 0), "Precio unitario")
-
-                    cursor.execute(
-                        """INSERT INTO ordenes_detalle (orden_id, producto_id, cantidad, precio_unitario, subtotal)
-                           VALUES (?, ?, ?, ?, ?)""",
-                        (orden_id, producto_id, cantidad, precio_unitario, cantidad * precio_unitario)
+            for item in items:
+                validated = OrderValidator.validate_item(item)
+                conn.execute(
+                    """
+                    INSERT INTO pedido_items (
+                        pedido_id, producto_id, nombre, descripcion, cantidad,
+                        precio_unitario, costo_unitario, subtotal
                     )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        pedido_id,
+                        validated.get('producto_id'),
+                        validated.get('nombre'),
+                        validated.get('descripcion'),
+                        validated.get('cantidad'),
+                        validated.get('precio_unitario'),
+                        validated.get('costo_unitario'),
+                        validated.get('subtotal'),
+                    ),
+                )
 
-                conn.commit()
-                return orden_id
-            except Exception:
-                conn.rollback()
-                raise
+            return pedido_id
 
     @staticmethod
-    def get_order(orden_id: int) -> dict:
-        """Obtiene una orden con detalles."""
+    def get_order(order_id: int) -> Optional[Dict[str, Any]]:
+        if not order_id:
+            return None
+
         with get_connection() as conn:
-            orden = conn.execute("SELECT * FROM ordenes WHERE id = ?", (orden_id,)).fetchone()
-            if not orden:
+            order = conn.execute(
+                "SELECT * FROM pedidos WHERE id = ? AND activo = 1",
+                (order_id,),
+            ).fetchone()
+            if not order:
                 return None
-            detalles = conn.execute("SELECT * FROM ordenes_detalle WHERE orden_id = ?", (orden_id,)).fetchall()
-            return {
-                'orden': dict(orden),
-                'detalles': [dict(d) for d in detalles],
-            }
+
+            items = conn.execute(
+                "SELECT * FROM pedido_items WHERE pedido_id = ? ORDER BY id ASC",
+                (order_id,),
+            ).fetchall()
+            payments = conn.execute(
+                "SELECT * FROM pagos_pedido WHERE pedido_id = ? ORDER BY fecha DESC",
+                (order_id,),
+            ).fetchall()
+            customer = conn.execute(
+                "SELECT * FROM clientes WHERE id = ?",
+                (order['cliente_id'],),
+            ).fetchone()
+
+            result = dict(order)
+            result['items'] = [dict(item) for item in items]
+            result['pagos'] = [dict(payment) for payment in payments]
+            result['cliente'] = dict(customer) if customer else None
+            return result
 
     @staticmethod
-    def update_order_status(orden_id: int, nuevo_estado: str) -> None:
-        """Actualiza el estado de una orden."""
-        nuevo_estado = (nuevo_estado or '').upper()
-        if nuevo_estado not in OrderService.ESTADOS:
-            raise ValidationError(f"Estado no válido: {nuevo_estado}")
+    def list_orders(estado: str = None, cliente_id: int = None, limit: int = 100) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM pedidos WHERE activo = 1"
+        params: list[Any] = []
+
+        if estado:
+            query += " AND estado = ?"
+            params.append(estado.upper())
+        if cliente_id:
+            query += " AND cliente_id = ?"
+            params.append(cliente_id)
+
+        query += " ORDER BY fecha_creacion DESC LIMIT ?"
+        params.append(limit)
+
+        with get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    def update_order_status(order_id: int, estado: str, fecha_entrega=None):
+        if not order_id:
+            raise ValidationError("Debe indicar un pedido válido.")
+        status = OrderValidator.validate_status(estado)
 
         with get_connection() as conn:
             conn.execute(
-                "UPDATE ordenes SET estado = ?, fecha_actualizacion = CURRENT_TIMESTAMP WHERE id = ?",
-                (nuevo_estado, orden_id)
+                "UPDATE pedidos SET estado = ?, fecha_entrega = COALESCE(?, fecha_entrega) WHERE id = ?",
+                (status, fecha_entrega, order_id),
             )
-            conn.commit()
+            return OrderService.get_order(order_id)
 
     @staticmethod
-    def registrar_anticipo(orden_id: int, monto: float) -> dict:
-        """Registra anticipo para una orden y actualiza saldo pendiente."""
-        monto = ProductValidator.validate_price(monto, "Monto del anticipo")
+    def add_payment(order_id: int, monto: float, metodo_pago: str = "EFECTIVO",
+                    tipo: str = "ANTICIPO", referencia: str = "") -> Dict[str, Any]:
+        if not order_id:
+            raise ValidationError("Debe indicar un pedido válido.")
+
+        amount = OrderValidator.validate_money(monto, "Monto del pago")
+        valid_tipo = ('ANTICIPO', 'PAGO', 'DEVOLUCION')
+        tipo = (tipo or 'ANTICIPO').strip().upper()
+        if tipo not in valid_tipo:
+            raise ValidationError(f"Tipo de pago no válido. Opciones: {', '.join(valid_tipo)}")
 
         with get_connection() as conn:
-            cursor = conn.cursor()
-            orden = cursor.execute("SELECT * FROM ordenes WHERE id = ?", (orden_id,)).fetchone()
-            if not orden:
-                raise ValidationError(f"La orden {orden_id} no existe.")
-
-            nuevo_anticipo = float(orden['anticipo'] or 0.0) + monto
-            nuevo_saldo = float(orden['total_con_envio'] or 0.0) - nuevo_anticipo
-            if nuevo_saldo < 0:
-                raise ValidationError("El anticipo ingresado excede el total de la orden.")
-
-            cursor.execute(
-                "UPDATE ordenes SET anticipo = ?, saldo_pendiente = ? WHERE id = ?",
-                (nuevo_anticipo, nuevo_saldo, orden_id)
-            )
-            cursor.execute(
-                "INSERT INTO pagos_orden (orden_id, monto, tipo_pago, concepto) VALUES (?, ?, 'ANTICIPO', ?)",
-                (orden_id, monto, f"Anticipo registrado {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-            )
-            conn.commit()
-
-            return {
-                'orden_id': orden_id,
-                'anticipo_total': nuevo_anticipo,
-                'saldo_pendiente': nuevo_saldo
-            }
-
-    @staticmethod
-    def registrar_pago_saldo(orden_id: int, monto: float) -> dict:
-        """Registra un pago del saldo pendiente."""
-        monto = ProductValidator.validate_price(monto, "Monto del saldo pagado")
-
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            orden = cursor.execute("SELECT * FROM ordenes WHERE id = ?", (orden_id,)).fetchone()
-            if not orden:
-                raise ValidationError(f"La orden {orden_id} no existe.")
-
-            saldo_actual = float(orden['saldo_pendiente'] or 0.0)
-            if monto > saldo_actual:
-                raise ValidationError(f"El monto pagado excede el saldo pendiente ({saldo_actual}).")
-
-            nuevo_saldo = saldo_actual - monto
-            nuevo_estado = 'COMPLETADA' if nuevo_saldo == 0 else orden['estado']
-
-            cursor.execute(
-                "UPDATE ordenes SET saldo_pendiente = ?, estado = ? WHERE id = ?",
-                (nuevo_saldo, nuevo_estado, orden_id)
-            )
-            cursor.execute(
-                "INSERT INTO pagos_orden (orden_id, monto, tipo_pago, concepto) VALUES (?, ?, 'PAGO_SALDO', ?)",
-                (orden_id, monto, f"Pago de saldo {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-            )
-            conn.commit()
-
-            return {
-                'orden_id': orden_id,
-                'saldo_pendiente': nuevo_saldo,
-                'estado': nuevo_estado
-            }
-
-    @staticmethod
-    def get_orders_by_state(estado: str) -> list:
-        """Obtiene órdenes por estado."""
-        estado = (estado or '').upper()
-        if estado not in OrderService.ESTADOS:
-            raise ValidationError(f"Estado no válido: {estado}")
-
-        with get_connection() as conn:
-            rows = conn.execute(
-                "SELECT * FROM ordenes WHERE estado = ? ORDER BY fecha_creacion DESC",
-                (estado,)
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    @staticmethod
-    def get_agenda(fecha: str = None) -> list:
-        """Obtiene la agenda de instalación o entrega para una fecha."""
-        if not fecha:
-            fecha = datetime.now().strftime('%Y-%m-%d')
-
-        with get_connection() as conn:
-            rows = conn.execute(
-                """SELECT o.id, c.nombre as cliente, c.telefono, o.direccion, o.tipo_servicio,
-                          o.fecha_instalacion, o.estado, o.saldo_pendiente, o.notas
-                   FROM ordenes o
-                   JOIN clientes c ON c.id = o.cliente_id
-                   WHERE DATE(o.fecha_instalacion) = ?
-                   ORDER BY o.fecha_instalacion ASC""",
-                (fecha,)
-            ).fetchall()
-            return [dict(r) for r in rows]
-
-    @staticmethod
-    def get_resumen_pendientes() -> dict:
-        """Obtiene resumen del total de pendientes por cobrar."""
-        with get_connection() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) as total_ordenes, SUM(saldo_pendiente) as saldo_total FROM ordenes WHERE estado NOT IN ('COMPLETADA', 'CANCELADA')"
+            order = conn.execute(
+                "SELECT total, anticipo, saldo_pendiente FROM pedidos WHERE id = ? AND activo = 1",
+                (order_id,),
             ).fetchone()
-            return {
-                'total_ordenes': row['total_ordenes'] or 0,
-                'saldo_total': float(row['saldo_total'] or 0.0)
-            }
+            if not order:
+                raise ValidationError("Pedido no encontrado.")
+
+            new_anticipo = order['anticipo'] + amount if tipo == 'ANTICIPO' else order['anticipo']
+            saldo = round(order['total'] - new_anticipo, 2)
+
+            conn.execute(
+                """
+                INSERT INTO pagos_pedido (pedido_id, monto, metodo_pago, tipo, referencia)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (order_id, amount, metodo_pago.upper(), tipo, referencia),
+            )
+            conn.execute(
+                "UPDATE pedidos SET anticipo = ?, saldo_pendiente = ? WHERE id = ?",
+                (new_anticipo, saldo, order_id),
+            )
+
+            return OrderService.get_order(order_id)
+
+    @staticmethod
+    def get_pending_orders() -> List[Dict[str, Any]]:
+        return OrderService.list_orders(estado='PENDIENTE') + OrderService.list_orders(estado='CONFIRMADO')
+
+    @staticmethod
+    def cancel_order(order_id: int, motivo: str = ""):
+        if not order_id:
+            raise ValidationError("Debe indicar un pedido válido.")
+
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE pedidos SET estado = 'CANCELADO', notas = COALESCE(?, notas) WHERE id = ?",
+                (motivo, order_id),
+            )
+            return OrderService.get_order(order_id)
 
 
-__all__ = ['OrderService']
+class AgendaService:
+    """Gestión de agenda y citas de instalación/entrega."""
+
+    @staticmethod
+    def schedule_order(pedido_id: int, fecha_programada, tipo: str = "INSTALACION",
+                      direccion: str = "", observaciones: str = "", estado: str = "PENDIENTE") -> int:
+        data = AgendaValidator.validate_agenda_data(
+            pedido_id=pedido_id,
+            fecha_programada=fecha_programada,
+            tipo=tipo,
+            direccion=direccion,
+            observaciones=observaciones,
+            estado=estado,
+        )
+
+        with get_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO agenda_pedidos (pedido_id, fecha_programada, tipo, direccion, observaciones, estado)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    data['pedido_id'],
+                    data['fecha_programada'],
+                    data['tipo'],
+                    data['direccion'],
+                    data['observaciones'],
+                    data['estado'],
+                ),
+            )
+            return cursor.lastrowid
+
+    @staticmethod
+    def get_agenda(fecha_inicio=None, fecha_fin=None, limit: int = 100) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM agenda_pedidos WHERE 1 = 1"
+        params: list[Any] = []
+
+        if fecha_inicio:
+            query += " AND fecha_programada >= ?"
+            params.append(fecha_inicio)
+        if fecha_fin:
+            query += " AND fecha_programada <= ?"
+            params.append(fecha_fin)
+
+        query += " ORDER BY fecha_programada ASC LIMIT ?"
+        params.append(limit)
+
+        with get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    def update_agenda(agenda_id: int, **fields):
+        if not agenda_id:
+            raise ValidationError("Debe indicar una cita válida.")
+        updates = {}
+
+        for key, value in fields.items():
+            if value is None:
+                continue
+            if key == 'estado':
+                updates['estado'] = AgendaValidator.validate_agenda_status(value)
+            elif key == 'tipo':
+                updates['tipo'] = AgendaValidator.validate_type(value)
+            elif key == 'direccion':
+                updates['direccion'] = AgendaValidator.validate_address(value)
+            elif key == 'observaciones':
+                updates['observaciones'] = AgendaValidator.validate_notes(value)
+            elif key == 'fecha_programada':
+                updates['fecha_programada'] = value
+
+        if not updates:
+            return None
+
+        set_clause = ", ".join(f"{key} = ?" for key in updates.keys())
+        values = list(updates.values()) + [agenda_id]
+
+        with get_connection() as conn:
+            conn.execute(f"UPDATE agenda_pedidos SET {set_clause} WHERE id = ?", values)
+            return conn.execute("SELECT * FROM agenda_pedidos WHERE id = ?", (agenda_id,)).fetchone()
+
+
+__all__ = ['CustomerService', 'OrderService', 'AgendaService']
