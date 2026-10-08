@@ -1,8 +1,10 @@
 import customtkinter as ctk
 from tkinter import messagebox
-from src.database.connection import get_connection
-from src.models.pos_manager import POSManager
+
+from src.services.product_service import ProductService
+from src.services.sale_service import SaleService
 from src.utils.image_helper import load_ctk_image
+
 
 class POSView(ctk.CTkFrame):
     def __init__(self, parent):
@@ -15,27 +17,22 @@ class POSView(ctk.CTkFrame):
         self.refresh_data()
 
     def _build_ui(self):
-        # Panel Izquierdo: Catálogo y Búsqueda
         left_panel = ctk.CTkFrame(self, fg_color="#181824", corner_radius=10)
         left_panel.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
 
         search_bar = ctk.CTkFrame(left_panel, fg_color="transparent")
         search_bar.pack(fill="x", padx=10, pady=10)
 
-        self.search_entry = ctk.CTkEntry(search_bar, placeholder_text="Buscar SKU, accesorio o vehículo (ej. Hilux, D-Max)...")
+        self.search_entry = ctk.CTkEntry(search_bar, placeholder_text="Buscar SKU, accesorio o vehículo...")
         self.search_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.search_entry.bind("<KeyRelease>", lambda e: self._search_product())
 
-        btn_ver_todos = ctk.CTkButton(
-            search_bar, text="Ver Todos", width=90, fg_color="#3A3A54", hover_color="#7B1FA2",
-            command=self.refresh_data
-        )
+        btn_ver_todos = ctk.CTkButton(search_bar, text="Ver Todos", width=90, fg_color="#3A3A54", hover_color="#7B1FA2", command=self.refresh_data)
         btn_ver_todos.pack(side="right")
 
         self.results_box = ctk.CTkScrollableFrame(left_panel, fg_color="#1E1E2E")
         self.results_box.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
-        # Panel Derecho: Ticket de Venta
         right_panel = ctk.CTkFrame(self, fg_color="#181824", corner_radius=10)
         right_panel.grid(row=0, column=1, sticky="nsew", padx=8, pady=8)
 
@@ -48,7 +45,7 @@ class POSView(ctk.CTkFrame):
         self.lbl_total.pack(pady=8)
 
         self.payment_method = ctk.CTkOptionMenu(
-            right_panel, 
+            right_panel,
             values=["EFECTIVO", "TARJETA", "TRANSFERENCIA"],
             fg_color="#252538", button_color="#7B1FA2"
         )
@@ -73,17 +70,7 @@ class POSView(ctk.CTkFrame):
         for w in self.results_box.winfo_children():
             w.destroy()
 
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            if q:
-                cursor.execute(
-                    """SELECT * FROM productos WHERE activo = 1 AND 
-                       (sku LIKE ? OR nombre LIKE ? OR marca_vehiculo LIKE ?) ORDER BY nombre ASC LIMIT 30""",
-                    (f"%{q}%", f"%{q}%", f"%{q}%")
-                )
-            else:
-                cursor.execute("SELECT * FROM productos WHERE activo = 1 ORDER BY id DESC LIMIT 30")
-            rows = cursor.fetchall()
+        rows = ProductService.search_products(q)
 
         if not rows:
             ctk.CTkLabel(self.results_box, text="No se encontraron productos coincidentes.", text_color="#808090").pack(pady=20)
@@ -166,18 +153,13 @@ class POSView(ctk.CTkFrame):
             return
 
         try:
-            with get_connection() as conn:
-                turno = conn.execute("SELECT id FROM turnos_caja WHERE estado = 'ABIERTO' ORDER BY id DESC LIMIT 1").fetchone()
-                turno_id = turno['id'] if turno else 1
-
-            venta_id = POSManager.process_sale(
-                cliente_id=1,
-                turno_id=turno_id,
+            result = SaleService.process_sale(
                 items=self.cart,
                 metodo_pago=self.payment_method.get(),
+                cliente_id=1,
                 descuento=0.0
             )
-            messagebox.showinfo("Éxito", f"Venta #{venta_id} procesada exitosamente.")
+            messagebox.showinfo("Éxito", f"Venta #{result['venta_id']} procesada exitosamente.")
             self.cart.clear()
             self._render_cart()
             self.refresh_data()

@@ -1,9 +1,8 @@
-import os
 import customtkinter as ctk
-from tkinter import filedialog, messagebox
+from tkinter import messagebox
 
 from src.database.connection import get_connection
-from src.utils.image_helper import save_product_image, load_ctk_image
+from src.services.product_service import ProductService
 from src.core.validators import ProductValidator, ValidationError
 
 
@@ -57,11 +56,8 @@ class InventoryView(ctk.CTkFrame):
         self.ent_anio.pack(fill="x", padx=15, pady=4)
 
         self.combo_tipo = ctk.CTkOptionMenu(
-            form,
-            values=["FISICO", "SERVICIO"],
-            command=self._toggle_tipo,
-            fg_color="#252538",
-            button_color="#7B1FA2"
+            form, values=["FISICO", "SERVICIO"], command=self._toggle_tipo,
+            fg_color="#252538", button_color="#7B1FA2"
         )
         self.combo_tipo.pack(fill="x", padx=15, pady=4)
 
@@ -138,6 +134,7 @@ class InventoryView(ctk.CTkFrame):
             self.lbl_margin.configure(text="Margen: $0.00 (0%)")
 
     def _pick_image(self):
+        from tkinter import filedialog
         f = filedialog.askopenfilename(
             title="Seleccionar Foto",
             filetypes=[("Imágenes", "*.png;*.jpg;*.jpeg;*.webp")]
@@ -165,62 +162,24 @@ class InventoryView(ctk.CTkFrame):
             stock = int(self.ent_stock.get() or 0) if tipo == 'FISICO' else 0
             s_min = int(self.ent_min.get() or 3) if tipo == 'FISICO' else 0
 
-            validated = ProductValidator.validate_product_data(sku, nombre, tipo, costo, precio, stock, s_min)
-            if validated['precio'] <= 0:
+            ProductValidator.validate_product_data(sku, nombre, tipo, costo, precio, stock, s_min)
+            if precio <= 0:
                 raise ValidationError("Precio de venta debe ser mayor que cero.")
-            if validated['tipo'] == 'FISICO' and validated['stock_minimo'] > validated['stock_actual'] and validated['stock_actual'] >= 0:
-                pass
 
-            with get_connection() as conn:
-                cursor = conn.cursor()
-                existing = cursor.execute(
-                    "SELECT id FROM productos WHERE sku = ? AND id != ?",
-                    (validated['sku'], self.selected_product_id or -1)
-                ).fetchone()
-                if existing:
-                    raise ValidationError(f"El SKU '{validated['sku']}' ya existe en el catálogo.")
+            rel_img = save_product_image(self.temp_image_file, sku) if self.temp_image_file else ""
 
-                if self.selected_product_id:
-                    current = cursor.execute(
-                        "SELECT imagen_path FROM productos WHERE id = ?",
-                        (self.selected_product_id,)
-                    ).fetchone()
-                    rel_img = current['imagen_path'] if current else ''
-
-                    if self.temp_image_file:
-                        rel_img = save_product_image(self.temp_image_file, validated['sku'])
-
-                    cursor.execute(
-                        """
-                        UPDATE productos
-                        SET sku = ?, nombre = ?, categoria = ?, marca_vehiculo = ?, anio_vehiculo = ?,
-                            tipo = ?, costo = ?, precio = ?, stock_actual = ?, stock_minimo = ?, imagen_path = ?
-                        WHERE id = ?
-                        """,
-                        (
-                            validated['sku'], validated['nombre'], categoria, marca, anio,
-                            validated['tipo'], validated['costo'], validated['precio'],
-                            validated['stock_actual'], validated['stock_minimo'], rel_img,
-                            self.selected_product_id
-                        )
-                    )
-                    msg = "Producto actualizado correctamente."
-                else:
-                    rel_img = save_product_image(self.temp_image_file, validated['sku']) if self.temp_image_file else ""
-                    cursor.execute(
-                        """
-                        INSERT INTO productos (sku, nombre, categoria, marca_vehiculo, anio_vehiculo, tipo, costo, precio, stock_actual, stock_minimo, imagen_path)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            validated['sku'], validated['nombre'], categoria, marca, anio,
-                            validated['tipo'], validated['costo'], validated['precio'],
-                            validated['stock_actual'], validated['stock_minimo'], rel_img
-                        )
-                    )
-                    msg = "Producto registrado con éxito."
-
-                conn.commit()
+            if self.selected_product_id:
+                ProductService.update_product(
+                    self.selected_product_id, sku, nombre, categoria, marca, anio, tipo,
+                    costo, precio, stock, s_min, rel_img
+                )
+                msg = "Producto actualizado correctamente."
+            else:
+                ProductService.create_product(
+                    sku, nombre, categoria, marca, anio, tipo, costo, precio,
+                    stock, s_min, rel_img
+                )
+                msg = "Producto registrado con éxito."
 
             messagebox.showinfo("Éxito", msg)
             self._reset_form()
@@ -259,9 +218,7 @@ class InventoryView(ctk.CTkFrame):
         if not self.selected_product_id:
             return
         if messagebox.askyesno("Confirmar", "¿Deseas eliminar permanentemente este producto del catálogo?"):
-            with get_connection() as conn:
-                conn.execute("UPDATE productos SET activo = 0 WHERE id = ?", (self.selected_product_id,))
-                conn.commit()
+            ProductService.deactivate_product(self.selected_product_id)
             messagebox.showinfo("Eliminado", "El producto ha sido dado de baja.")
             self._reset_form()
             self.refresh_data()
@@ -288,18 +245,10 @@ class InventoryView(ctk.CTkFrame):
             w.destroy()
 
         q = self.search_entry.get().strip()
-        with get_connection() as conn:
-            if q:
-                rows = conn.execute(
-                    """SELECT * FROM productos WHERE activo = 1 AND 
-                       (sku LIKE ? OR nombre LIKE ? OR marca_vehiculo LIKE ?) ORDER BY id DESC""",
-                    (f"%{q}%", f"%{q}%", f"%{q}%")
-                ).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM productos WHERE activo = 1 ORDER BY id DESC").fetchall()
+        rows = ProductService.search_products(q)
 
         for prod in rows:
-            p_dict = dict(prod)
+            p_dict = prod
             card = ctk.CTkFrame(self.table_scroll, fg_color="#252538", corner_radius=6)
             card.pack(fill="x", pady=3, padx=4)
 
@@ -308,7 +257,6 @@ class InventoryView(ctk.CTkFrame):
             lbl_pic.pack(side="left", padx=8, pady=4)
 
             stock_text = f"Stock: {p_dict['stock_actual']}" if p_dict['tipo'] == 'FISICO' else "[SERVICIO]"
-
             info = (
                 f"{p_dict['sku']} | {p_dict['nombre']}\n"
                 f"Auto: {p_dict['marca_vehiculo']} ({p_dict['anio_vehiculo']})  |  "
@@ -322,3 +270,7 @@ class InventoryView(ctk.CTkFrame):
                 command=lambda p=p_dict: self._select_product_for_edit(p)
             )
             btn_edit.pack(side="right", padx=8)
+
+
+from src.utils.image_helper import save_product_image, load_ctk_image
+from src.core.validators import ProductValidator, ValidationError

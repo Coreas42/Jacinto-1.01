@@ -1,2 +1,159 @@
 """
-Servicio de gestión de caja y turnos.\nCentraliza toda la lógica de negocio relacionada con arqueos y cierres de turno.\n\"\"\"\n\nfrom datetime import datetime\nfrom src.database.connection import get_connection\nfrom src.core.validators import CashRegisterValidator, ValidationError\n\n\nclass CashRegisterService:\n    \"\"\"Gestiona todas las operaciones de caja.\"\"\"\n\n    @staticmethod\n    def open_turn(fondo_inicial: float = 100.0) -> dict:\n        \"\"\"Abre un nuevo turno de caja.\"\"\"\n        fondo_inicial = CashRegisterValidator.validate_initial_fund(fondo_inicial)\n        \n        with get_connection() as conn:\n            conn.execute(\n                \"INSERT INTO turnos_caja (fondo_inicial, estado) VALUES (?, 'ABIERTO')\",\n                (fondo_inicial,)\n            )\n            conn.commit()\n            \n            turno = conn.execute(\n                \"SELECT * FROM turnos_caja WHERE estado = 'ABIERTO' ORDER BY id DESC LIMIT 1\"\n            ).fetchone()\n            return dict(turno) if turno else None\n\n    @staticmethod\n    def get_open_turn() -> dict:\n        \"\"\"Obtiene el turno abierto actual.\"\"\"\n        with get_connection() as conn:\n            turno = conn.execute(\n                \"SELECT * FROM turnos_caja WHERE estado = 'ABIERTO' ORDER BY id DESC LIMIT 1\"\n            ).fetchone()\n            return dict(turno) if turno else None\n\n    @staticmethod\n    def get_turn_summary(turno_id: int) -> dict:\n        \"\"\"Obtiene un resumen completo de un turno.\"\"\"\n        with get_connection() as conn:\n            turno = conn.execute(\n                \"SELECT * FROM turnos_caja WHERE id = ?\",\n                (turno_id,)\n            ).fetchone()\n            \n            if not turno:\n                raise ValidationError(f\"Turno {turno_id} no existe.\")\n            \n            # Resumen por método de pago\n            ventas = conn.execute(\n                \"\"\"SELECT metodo_pago, COUNT(*) as cantidad, SUM(total) as monto\n                   FROM ventas WHERE turno_id = ? GROUP BY metodo_pago\"\"\",\n                (turno_id,)\n            ).fetchall()\n            \n            resumen_pagos = {}\n            total_vendido = 0.0\n            for row in ventas:\n                resumen_pagos[row['metodo_pago']] = {\n                    'cantidad': row['cantidad'],\n                    'monto': float(row['monto'] or 0.0)\n                }\n                total_vendido += float(row['monto'] or 0.0)\n            \n            efectivo_ventas = float(resumen_pagos.get('EFECTIVO', {}).get('monto', 0.0))\n            esperado_efectivo = float(turno['fondo_inicial'] or 0.0) + efectivo_ventas\n            \n            return {\n                'turno': dict(turno),\n                'resumen_pagos': resumen_pagos,\n                'total_vendido': total_vendido,\n                'efectivo_esperado': esperado_efectivo,\n                'efectivo_ventas': efectivo_ventas\n            }\n\n    @staticmethod\n    def close_turn(turno_id: int, efectivo_contado: float) -> dict:\n        \"\"\"Cierra un turno y registra la diferencia de caja.\"\"\"\n        efectivo_contado = CashRegisterValidator.validate_cash_amount(efectivo_contado)\n        \n        with get_connection() as conn:\n            cursor = conn.cursor()\n            try:\n                turno = cursor.execute(\n                    \"SELECT * FROM turnos_caja WHERE id = ?\",\n                    (turno_id,)\n                ).fetchone()\n                \n                if not turno:\n                    raise ValidationError(f\"Turno {turno_id} no existe.\")\n                if turno['estado'] != 'ABIERTO':\n                    raise ValidationError(f\"El turno ya está cerrado.\")\n                \n                # Calcula diferencia\n                ventas_ef = cursor.execute(\n                    \"SELECT SUM(total) as tot FROM ventas WHERE turno_id = ? AND metodo_pago = 'EFECTIVO'\",\n                    (turno_id,)\n                ).fetchone()['tot'] or 0.0\n                \n                esperado = float(turno['fondo_inicial'] or 0.0) + float(ventas_ef or 0.0)\n                diferencia = efectivo_contado - esperado\n                \n                # Cierra turno\n                cursor.execute(\n                    \"\"\"UPDATE turnos_caja \n                       SET fecha_cierre = CURRENT_TIMESTAMP, efectivo_declarado = ?, diferencia = ?, estado = 'CERRADO'\n                       WHERE id = ?\"\"\",\n                    (efectivo_contado, diferencia, turno_id)\n                )\n                \n                # Abre nuevo turno\n                cursor.execute(\n                    \"INSERT INTO turnos_caja (fondo_inicial, estado) VALUES (100.0, 'ABIERTO')\"\n                )\n                \n                conn.commit()\n                \n                return {\n                    'turno_id': turno_id,\n                    'fondo_inicial': float(turno['fondo_inicial'] or 0.0),\n                    'efectivo_ventas': float(ventas_ef or 0.0),\n                    'esperado': esperado,\n                    'contado': efectivo_contado,\n                    'diferencia': diferencia,\n                    'status': 'CERRADO'\n                }\n            except Exception:\n                conn.rollback()\n                raise\n\n    @staticmethod\n    def get_turn_history(limit: int = 10) -> list:\n        \"\"\"Obtiene los últimos turnos cerrados.\"\"\"\n        with get_connection() as conn:\n            rows = conn.execute(\n                \"\"\"SELECT * FROM turnos_caja WHERE estado = 'CERRADO'\n                   ORDER BY fecha_cierre DESC LIMIT ?\"\"\",\n                (limit,)\n            ).fetchall()\n            return [dict(row) for row in rows]\n\n    @staticmethod\n    def get_cash_summary_by_date(fecha: str) -> dict:\n        \"\"\"Obtiene resumen de caja para una fecha específica (YYYY-MM-DD).\"\"\"\n        with get_connection() as conn:\n            turnos = conn.execute(\n                \"\"\"SELECT * FROM turnos_caja \n                   WHERE DATE(fecha_apertura) = ? OR DATE(fecha_cierre) = ?\n                   ORDER BY id DESC\"\"\",\n                (fecha, fecha)\n            ).fetchall()\n            \n            total_esperado = 0.0\n            total_contado = 0.0\n            total_diferencia = 0.0\n            \n            for turno in turnos:\n                if turno['fondo_inicial']:\n                    total_esperado += float(turno['fondo_inicial'])\n                if turno['efectivo_declarado']:\n                    total_contado += float(turno['efectivo_declarado'])\n                if turno['diferencia']:\n                    total_diferencia += float(turno['diferencia'])\n            \n            return {\n                'fecha': fecha,\n                'turnos_count': len(turnos),\n                'total_esperado': total_esperado,\n                'total_contado': total_contado,\n                'total_diferencia': total_diferencia,\n                'turnos': [dict(t) for t in turnos]\n            }\n"
+Servicio de gestión de caja y turnos.
+Centraliza toda la lógica de negocio relacionada con arqueos y cierres de turno.
+"""
+
+from src.database.connection import get_connection
+from src.core.validators import CashRegisterValidator, ValidationError
+
+
+class CashRegisterService:
+    """Gestiona todas las operaciones de caja y turnos."""
+
+    @staticmethod
+    def open_turn(fondo_inicial: float = 100.0) -> dict:
+        """Abre un nuevo turno."""
+        fondo_inicial = CashRegisterValidator.validate_initial_fund(fondo_inicial)
+        with get_connection() as conn:
+            conn.execute(
+                "INSERT INTO turnos_caja (fondo_inicial, estado) VALUES (?, 'ABIERTO')",
+                (fondo_inicial,)
+            )
+            conn.commit()
+            turno = conn.execute(
+                "SELECT * FROM turnos_caja WHERE estado = 'ABIERTO' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return dict(turno) if turno else None
+
+    @staticmethod
+    def get_open_turn() -> dict:
+        """Obtiene el turno abierto actual."""
+        with get_connection() as conn:
+            turno = conn.execute(
+                "SELECT * FROM turnos_caja WHERE estado = 'ABIERTO' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            return dict(turno) if turno else None
+
+    @staticmethod
+    def get_turn_summary(turno_id: int) -> dict:
+        """Obtiene resumen de un turno."""
+        with get_connection() as conn:
+            turno = conn.execute("SELECT * FROM turnos_caja WHERE id = ?", (turno_id,)).fetchone()
+            if not turno:
+                raise ValidationError(f"Turno {turno_id} no existe.")
+
+            ventas = conn.execute(
+                """SELECT metodo_pago, COUNT(*) as cantidad, SUM(total) as monto
+                   FROM ventas WHERE turno_id = ? GROUP BY metodo_pago""",
+                (turno_id,)
+            ).fetchall()
+
+            resumen_pagos = {}
+            total_vendido = 0.0
+            for row in ventas:
+                resumen_pagos[row['metodo_pago']] = {
+                    'cantidad': row['cantidad'],
+                    'monto': float(row['monto'] or 0.0),
+                }
+                total_vendido += float(row['monto'] or 0.0)
+
+            efectivo_ventas = float(resumen_pagos.get('EFECTIVO', {}).get('monto', 0.0))
+            esperado_efectivo = float(turno['fondo_inicial'] or 0.0) + efectivo_ventas
+            return {
+                'turno': dict(turno),
+                'resumen_pagos': resumen_pagos,
+                'total_vendido': total_vendido,
+                'efectivo_esperado': esperado_efectivo,
+                'efectivo_ventas': efectivo_ventas,
+            }
+
+    @staticmethod
+    def close_turn(turno_id: int, efectivo_contado: float) -> dict:
+        """Cierra un turno y registra la diferencia de caja."""
+        efectivo_contado = CashRegisterValidator.validate_cash_amount(efectivo_contado)
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                turno = cursor.execute("SELECT * FROM turnos_caja WHERE id = ?", (turno_id,)).fetchone()
+                if not turno:
+                    raise ValidationError(f"Turno {turno_id} no existe.")
+                if turno['estado'] != 'ABIERTO':
+                    raise ValidationError("El turno ya está cerrado.")
+
+                ventas_ef = cursor.execute(
+                    "SELECT SUM(total) as tot FROM ventas WHERE turno_id = ? AND metodo_pago = 'EFECTIVO'",
+                    (turno_id,)
+                ).fetchone()['tot'] or 0.0
+
+                esperado = float(turno['fondo_inicial'] or 0.0) + float(ventas_ef or 0.0)
+                diferencia = efectivo_contado - esperado
+
+                cursor.execute(
+                    """UPDATE turnos_caja
+                       SET fecha_cierre = CURRENT_TIMESTAMP, efectivo_declarado = ?, diferencia = ?, estado = 'CERRADO'
+                       WHERE id = ?""",
+                    (efectivo_contado, diferencia, turno_id)
+                )
+                cursor.execute(
+                    "INSERT INTO turnos_caja (fondo_inicial, estado) VALUES (100.0, 'ABIERTO')"
+                )
+                conn.commit()
+
+                return {
+                    'turno_id': turno_id,
+                    'fondo_inicial': float(turno['fondo_inicial'] or 0.0),
+                    'efectivo_ventas': float(ventas_ef or 0.0),
+                    'esperado': esperado,
+                    'contado': efectivo_contado,
+                    'diferencia': diferencia,
+                    'status': 'CERRADO',
+                }
+            except Exception:
+                conn.rollback()
+                raise
+
+    @staticmethod
+    def get_turn_history(limit: int = 10) -> list:
+        """Obtiene los últimos turnos cerrados."""
+        with get_connection() as conn:
+            rows = conn.execute(
+                """SELECT * FROM turnos_caja WHERE estado = 'CERRADO'
+                   ORDER BY fecha_cierre DESC LIMIT ?""",
+                (limit,)
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    @staticmethod
+    def get_cash_summary_by_date(fecha: str) -> dict:
+        """Obtiene resumen de caja para una fecha."""
+        with get_connection() as conn:
+            turnos = conn.execute(
+                """SELECT * FROM turnos_caja
+                   WHERE DATE(fecha_apertura) = ? OR DATE(fecha_cierre) = ?
+                   ORDER BY id DESC""",
+                (fecha, fecha)
+            ).fetchall()
+
+            total_esperado = 0.0
+            total_contado = 0.0
+            total_diferencia = 0.0
+            for turno in turnos:
+                if turno['fondo_inicial']:
+                    total_esperado += float(turno['fondo_inicial'])
+                if turno['efectivo_declarado']:
+                    total_contado += float(turno['efectivo_declarado'])
+                if turno['diferencia']:
+                    total_diferencia += float(turno['diferencia'])
+
+            return {
+                'fecha': fecha,
+                'turnos_count': len(turnos),
+                'total_esperado': total_esperado,
+                'total_contado': total_contado,
+                'total_diferencia': total_diferencia,
+                'turnos': [dict(t) for t in turnos],
+            }
+
+
+__all__ = ['CashRegisterService']
